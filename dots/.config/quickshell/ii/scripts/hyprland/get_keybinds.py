@@ -3,7 +3,7 @@ import argparse
 import re
 import os
 from os.path import expandvars as os_expandvars
-from typing import Dict, List
+from typing import Dict, List, Optional, Set
 
 TITLE_REGEX = "#+!"
 HIDE_COMMENT = "[hidden]"
@@ -11,7 +11,7 @@ MOD_SEPARATORS = ['+', ' ']
 COMMENT_BIND_PATTERN = "#/#"
 
 parser = argparse.ArgumentParser(description='Hyprland keybind reader')
-parser.add_argument('--path', type=str, default="$HOME/.config/hypr/hyprland.conf", help='path to keybind file (sourcing isn\'t supported)')
+parser.add_argument('--path', type=str, default="$HOME/.config/hypr/hyprland.conf", help='path to keybind file')
 args = parser.parse_args()
 content_lines = []
 reading_line = 0
@@ -40,6 +40,77 @@ def read_content(path: str) -> str:
         return ("error")
     with open(os.path.expanduser(os.path.expandvars(path)), "r") as file:
         return file.read()
+
+
+def normalize_path(path: str, base_dir: Optional[str] = None) -> str:
+    expanded = os.path.expanduser(os.path.expandvars(path))
+    if not os.path.isabs(expanded) and base_dir:
+        expanded = os.path.join(base_dir, expanded)
+    return os.path.realpath(expanded)
+
+
+def parse_var_assignment(line: str) -> None:
+    global Variables
+    assign_match = re.match(r"^\s*\$(\w+)\s*=\s*(.*?)\s*$", line)
+    if not assign_match:
+        return
+    var_name = assign_match.group(1)
+    var_value = assign_match.group(2).strip()
+    if (
+        (var_value.startswith('"') and var_value.endswith('"'))
+        or (var_value.startswith("'") and var_value.endswith("'"))
+    ):
+        var_value = var_value[1:-1]
+    Variables[var_name] = var_value
+
+
+def expand_config_vars(text: str) -> str:
+    def _replace(match: re.Match[str]) -> str:
+        var_name = match.group(1)
+        if var_name in Variables:
+            return Variables[var_name]
+        return os_expandvars(match.group(0))
+
+    return re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*)", _replace, text)
+
+
+def read_content_with_sources(path: str, visited: Optional[Set[str]] = None) -> List[str]:
+    if visited is None:
+        visited = set()
+
+    resolved_path = normalize_path(path)
+    if resolved_path in visited:
+        return []
+    visited.add(resolved_path)
+
+    raw_content = read_content(resolved_path)
+    if raw_content == "error":
+        return ["error"]
+
+    merged_lines: List[str] = []
+    current_dir = os.path.dirname(resolved_path)
+    for raw_line in raw_content.splitlines():
+        parse_var_assignment(raw_line)
+
+        source_match = re.match(r"^\s*source\s*=\s*(.*?)\s*(?:#.*)?$", raw_line)
+        if source_match:
+            source_path = source_match.group(1).strip()
+            if (
+                (source_path.startswith('"') and source_path.endswith('"'))
+                or (source_path.startswith("'") and source_path.endswith("'"))
+            ):
+                source_path = source_path[1:-1]
+            source_path = expand_config_vars(source_path)
+
+            sourced_lines = read_content_with_sources(source_path, visited)
+            if sourced_lines and sourced_lines[0] == "error":
+                continue
+            merged_lines.extend(sourced_lines)
+            continue
+
+        merged_lines.append(raw_line)
+
+    return merged_lines
 
 
 def autogenerate_comment(dispatcher: str, params: str = "") -> str:
@@ -140,6 +211,7 @@ def get_keybind_at_line(line_number, line_start = 0):
     global content_lines
     line = content_lines[line_number]
     _, keys = line.split("=", 1)
+    keys = expand_config_vars(keys)
     keys, *comment = keys.split("#", 1)
 
     mods, key, dispatcher, *params = list(map(str.strip, keys.split(",", 4)))
@@ -209,7 +281,11 @@ def get_binds_recursive(current_content, scope):
 
 def parse_keys(path: str) -> Dict[str, List[KeyBinding]]:
     global content_lines
-    content_lines = read_content(path).splitlines()
+    global reading_line
+    global Variables
+    reading_line = 0
+    Variables = {}
+    content_lines = read_content_with_sources(path)
     if content_lines[0] == "error":
         return "error"
     return get_binds_recursive(Section([], [], ""), 0)
