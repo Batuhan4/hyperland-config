@@ -27,10 +27,35 @@ fi
 
 [[ "${UNLOCK_PASSWORD+x}" == "x" ]] || exit 1
 
-# Unlock
-killall -q -u "$(whoami)" gnome-keyring-daemon
-eval $(echo -n "${UNLOCK_PASSWORD}" \
-           | gnome-keyring-daemon --daemonize --login \
-           | sed -e 's/^/export /')
+# Unlock through Secret Service directly (works for both blank and non-blank keyring passwords).
+UNLOCK_PASSWORD="${UNLOCK_PASSWORD}" /usr/bin/python3 - <<'PY'
+import os
+import sys
+import dbus
+
+password = os.environ.get("UNLOCK_PASSWORD", "")
+
+bus = dbus.SessionBus()
+obj = bus.get_object("org.freedesktop.secrets", "/org/freedesktop/secrets")
+svc = dbus.Interface(obj, "org.freedesktop.Secret.Service")
+internal = dbus.Interface(obj, "org.gnome.keyring.InternalUnsupportedGuiltRiddenInterface")
+
+collection = svc.ReadAlias("login")
+if collection == "/":
+    collection = svc.ReadAlias("default")
+if collection == "/":
+    sys.exit(1)
+
+_, session = svc.OpenSession("plain", dbus.String(""))
+secret = dbus.Struct((
+    dbus.ObjectPath(session),
+    dbus.ByteArray(b""),
+    dbus.ByteArray(password.encode("utf-8")),
+    dbus.String("text/plain"),
+))
+
+internal.UnlockWithMasterPassword(dbus.ObjectPath(collection), secret)
+PY
+
 unset UNLOCK_PASSWORD
 echo '' >&2
