@@ -10,8 +10,9 @@ if "${SCRIPT_DIR}/is_unlocked.sh"; then
     exit 1
 fi
 
-# Prompt for password if not provided
-if [[ -z "${UNLOCK_PASSWORD:-}" ]]; then
+# Prompt only when UNLOCK_PASSWORD is truly unset.
+# If it's set to an empty string, treat that as an intentional blank keyring password.
+if [[ -z "${UNLOCK_PASSWORD+x}" ]]; then
     if [[ -t 0 ]]; then
         echo -n 'Login password: ' >&2
         read -r -s UNLOCK_PASSWORD || exit 1
@@ -24,7 +25,7 @@ if [[ -z "${UNLOCK_PASSWORD:-}" ]]; then
     fi
 fi
 
-[[ -n "${UNLOCK_PASSWORD:-}" ]] || exit 1
+[[ "${UNLOCK_PASSWORD+x}" == "x" ]] || exit 1
 
 # Unlock
 killall -q -u "$(whoami)" gnome-keyring-daemon

@@ -17,6 +17,11 @@ if "${SCRIPT_DIR}/is_unlocked.sh" >/dev/null 2>&1; then
     exit 0
 fi
 
+# Try blank keyring password first (for auto-unlock setups).
+if UNLOCK_PASSWORD='' "${SCRIPT_DIR}/unlock.sh" >/dev/null 2>&1; then
+    exit 0
+fi
+
 # Best-effort prompt. Cancel means "do nothing".
 if command -v kdialog >/dev/null 2>&1; then
     UNLOCK_PASSWORD="$(kdialog --title 'Unlock Login Keyring' --password 'Login password:' 2>/dev/null || true)"
